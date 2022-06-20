@@ -1,8 +1,8 @@
 package org.server;
 
 public enum CommandType {
-   NODE("node"),
-   POD("pod");
+   NODE("NODE"),
+   POD("POD");
    
    public final String name;
 
