@@ -14,8 +14,10 @@ import org.apache.commons.io.IOUtils;
 import org.json.JSONObject;
 import lombok.extern.slf4j.Slf4j;
 import java.io.BufferedReader;
+import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -46,7 +48,7 @@ public class KubeServer {
 		log.info("starting server at port {}",portStr);
 		int port = Integer.parseInt(portStr.trim());
 		log.info("starting server at port {}",port);
-		try(ServerSocket serverSocket = new ServerSocket(port,BOUND,InetAddress.getLocalHost())){
+		try(ServerSocket serverSocket = new ServerSocket(port,BOUND,InetAddress.getLoopbackAddress())){
 			KubeServer server = new KubeServer();
 			if(serverSocket.isBound()) {
 				server.start(serverSocket);
@@ -57,7 +59,7 @@ public class KubeServer {
 			log.error("Exception while binding {}",ex);
 		}
 	}
-	public void start(ServerSocket serverSocket) throws InterruptedException {
+	public void start(ServerSocket serverSocket) throws IOException,InterruptedException {
 		while (true)
 		{
 			mutex.acquire();
@@ -73,6 +75,7 @@ public class KubeServer {
 				DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
 				Runnable handler = new ClientHandler(nodeCmd.constructAndGetCommand(jsonClientCommand),outputStream);
 				service.submit(handler);
+				service.awaitTermination(THREAD_WAITING_TIME,TimeUnit.MILLISECONDS);
 			}
 			catch (Exception ex){
 				log.error("exception occured while running server {}",ex);
@@ -100,11 +103,25 @@ public class KubeServer {
            log.info("running command {} on date {}",this.cmdString,RUN_DATE.get());
            try {
                Process process = Runtime.getRuntime().exec(String.format("cmd.exe /c %s",this.cmdString));
-               StreamGobbler streamGobbler =  new StreamGobbler(process.getInputStream());
+               String prefix = "cmdOutput";
+               String suffix = ".json";
+               File directoryPath = new File(Config.getProcessRunDirectoty());
+               File outputFile = File.createTempFile(prefix, suffix, directoryPath);
+               StreamGobbler streamGobbler =  new StreamGobbler(process.getInputStream(),outputFile,process.getErrorStream());
                Executors.newSingleThreadExecutor().submit(streamGobbler);
                int exitCode = process.waitFor();
                log.info("process exited {}",exitCode);
+               FileInputStream fis = new FileInputStream(outputFile);
+               BufferedReader reader = new BufferedReader(new InputStreamReader(fis));
+               final StringBuilder outputJson = new StringBuilder();     
+               reader.lines().forEach(line -> {
+            	   outputJson.append(line);
+               });
+               dataOutPutStream.writeBytes(outputJson.toString());
+               fis.close();
+               reader.close();
 			   dataOutPutStream.close();
+			   outputFile.delete();
            } catch (InterruptedException | IOException ex) {
                log.error("Exception occured while running process {}", ex);
            }
