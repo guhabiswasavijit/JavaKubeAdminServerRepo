@@ -3,6 +3,8 @@ package org.server;
 import java.util.Date;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
@@ -18,6 +20,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -37,6 +40,7 @@ public class KubeServer {
 	private static BlockingQueue<Runnable> queue = null;
 	private static ExecutorService service = null;
 	private static Semaphore mutex;
+	private static CyclicBarrier barrier = new CyclicBarrier(2);
 	static {
 		 mutex = new Semaphore(BOUND);
 		 queue = new ArrayBlockingQueue<>(BOUND);
@@ -72,10 +76,27 @@ public class KubeServer {
 				CommandType cmdType = CommandType.valueOf(jsonClientCommand.getString(KubeConstants.COMMAND_TYPE));
 				CommandFactory factory = CommandFactory.getInstance();
 				NodeCommand nodeCmd = (NodeCommand)factory.getCommand(cmdType);
-				DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
-				Runnable handler = new ClientHandler(nodeCmd.constructAndGetCommand(jsonClientCommand),outputStream);
+				String prefix = "cmdOutput";
+	            String suffix = "json";
+	            File directoryPath = new File(Config.getProcessRunDirectoty());
+	            File outputFile = File.createTempFile(prefix, suffix, directoryPath);
+				Runnable handler = new ClientHandler(nodeCmd.constructAndGetCommand(jsonClientCommand),outputFile);
 				service.submit(handler);
-				service.awaitTermination(THREAD_WAITING_TIME,TimeUnit.MILLISECONDS);
+				barrier.await();
+				DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
+				log.info("Output file size {}",outputFile.length());
+                FileReader reader = new FileReader(outputFile);
+                char[] chars = new char[10*1024];
+                int success = reader.read(chars);
+                log.info("Successfully read commnad out file {}",success);
+                String outputJson = new String(chars);
+                log.info("Successfully read from file {}",outputJson);
+                outputStream.writeBytes(outputJson);
+                outputStream.flush();
+                reader.close();
+                log.info("About to delete process output file");
+			    outputFile.delete();
+			    log.info("Successfully deleted process output file");
 			}
 			catch (Exception ex){
 				log.error("exception occured while running server {}",ex);
@@ -91,11 +112,11 @@ public class KubeServer {
             	return simpleDateFormat.format(new Date());
             }
          };
-		private final DataOutputStream dataOutPutStream;
 		private final String cmdString;
-		public ClientHandler(String inputCommand,DataOutputStream t_dataOutPutStream){
-			this.dataOutPutStream = t_dataOutPutStream;
+		private final File outputFile;
+		public ClientHandler(String inputCommand,File i_File){
 			this.cmdString = inputCommand;
+			this.outputFile = i_File;
 		}
 
 		@Override
@@ -103,26 +124,12 @@ public class KubeServer {
            log.info("running command {} on date {}",this.cmdString,RUN_DATE.get());
            try {
                Process process = Runtime.getRuntime().exec(String.format("cmd.exe /c %s",this.cmdString));
-               String prefix = "cmdOutput";
-               String suffix = ".json";
-               File directoryPath = new File(Config.getProcessRunDirectoty());
-               File outputFile = File.createTempFile(prefix, suffix, directoryPath);
-               StreamGobbler streamGobbler =  new StreamGobbler(process.getInputStream(),outputFile,process.getErrorStream());
+               StreamGobbler streamGobbler =  new StreamGobbler(process.getInputStream(),this.outputFile,process.getErrorStream());
                Executors.newSingleThreadExecutor().submit(streamGobbler);
                int exitCode = process.waitFor();
                log.info("process exited {}",exitCode);
-               FileInputStream fis = new FileInputStream(outputFile);
-               BufferedReader reader = new BufferedReader(new InputStreamReader(fis));
-               final StringBuilder outputJson = new StringBuilder();     
-               reader.lines().forEach(line -> {
-            	   outputJson.append(line);
-               });
-               dataOutPutStream.writeBytes(outputJson.toString());
-               fis.close();
-               reader.close();
-			   dataOutPutStream.close();
-			   outputFile.delete();
-           } catch (InterruptedException | IOException ex) {
+               barrier.await();
+           } catch (InterruptedException | IOException | BrokenBarrierException ex) {
                log.error("Exception occured while running process {}", ex);
            }
 		}

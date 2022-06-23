@@ -36,10 +36,10 @@ public class StreamGobbler implements Runnable {
         		errorLog.append(line);
         	});
         	log.info("Got output from process {}",outputJson.toString());
-        	log.info("Got error from process {}",errorLog.toString());
             writer.write(outputJson.toString());
             writer.flush();
         } catch (IOException ex) {
+        	log.info("Got error from process {}",errorLog.toString());
 			log.error("Error writing command output {}",ex);
 		}
     }
